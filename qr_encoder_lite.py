@@ -4,7 +4,7 @@ Supports QR versions 1-40, EC level L, byte mode. No external dependencies.
 Usage: echo "data" | python3 qr_encoder_lite.py
        base64 file.txt | python3 qr_encoder_lite.py
 """
-import sys,os,time
+import sys,os,time,select,tty,termios
 
 # EC-L table per version: (ec_cw_per_block, g1_count, g1_dcw, g2_count, g2_dcw)
 _ECL = [
@@ -287,12 +287,30 @@ def terminal(M):
         lines.append(l)
     print('\n'.join(lines))
 
+def _wait(duration):
+    """Sleep for `duration` seconds, but skip immediately if user presses a key."""
+    try:
+        tty_f = open('/dev/tty', 'r')
+    except OSError:
+        time.sleep(duration)
+        return
+    fd = tty_f.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        r, _, _ = select.select([tty_f], [], [], duration)
+        if r:
+            tty_f.read(1)  # consume the keypress
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        tty_f.close()
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Generate QR codes from stdin')
     parser.add_argument('-n', '--chunk-size', type=int, default=0, metavar='SIZE',
                         help='Split input into chunks of SIZE characters')
-    parser.add_argument('-d', '--delay', type=int, default=0, metavar='DELAY',
+    parser.add_argument('-d', '--delay', type=float, default=0, metavar='DELAY',
                         help='Delay <DELAY> seconds between each chunk, default 0')
 
     args = parser.parse_args()
@@ -304,7 +322,7 @@ if __name__ == '__main__':
     if args.delay > 0:
        os.system('clear')
        print(f"\nDetected player mode, going to start in 3 seconds\n") 
-       time.sleep(3)
+       _wait(3)
 
     if args.chunk_size > 0:
         chunks = [data[i:i+args.chunk_size] for i in range(0, len(data), args.chunk_size)]
@@ -315,6 +333,7 @@ if __name__ == '__main__':
             print(f"\nchunk {idx}/{total}\n")
             terminal(make_qr(chunk.encode('utf-8')))
             if args.delay > 0:
-                time.sleep(args.delay)
+                _wait(args.delay)
     else:
         terminal(make_qr(data.encode('utf-8')))
+
