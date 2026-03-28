@@ -49,7 +49,7 @@ def decode_frame(frame_path):
 def main():
     parser = argparse.ArgumentParser(description="Decode QR codes from a video file")
     parser.add_argument("video", help="Path to the video file")
-    parser.add_argument("-r", "--fps", type=float, default=2,
+    parser.add_argument("-r", "--fps", type=float, default=10,
                         help="Frame sampling rate in fps (default: 2)")
     args = parser.parse_args()
 
