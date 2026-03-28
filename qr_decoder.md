@@ -1,7 +1,7 @@
 # QRCODE Decoder
 - name: qr_decoder_lite.py <video_filename>
 - execute: python qr_decoder_lite.py test.mp4
-
+- python qr_decoder_lite.py test.mp4 > xxx.b64
 ## tech stack
 - python 3.10
 - use venv to manage dependencies

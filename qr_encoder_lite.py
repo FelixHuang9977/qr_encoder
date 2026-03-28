@@ -1,23 +1,38 @@
-#!/usr/bin/env python3
+#!venv/bin/python
 """qr_encoder_lite.py - Standalone QR code generator for VT100 terminals.
-Supports QR versions 1-40, EC level L, byte mode. No external dependencies.
+fElix, v0.2
+Supports QR versions 1-40, EC level L/M, byte mode. No external dependencies.
 Usage: echo "data" | python3 qr_encoder_lite.py
        base64 file.txt | python3 qr_encoder_lite.py
+       base64 file.txt | python3 qr_encoder_lite.py -n 1100 --EC M -d 0.5
 """
-import sys,os,time,select,tty,termios
+import sys,os,time,select,tty,termios,hashlib
 
-# EC-L table per version: (ec_cw_per_block, g1_count, g1_dcw, g2_count, g2_dcw)
-_ECL = [
-    None,
-    (7,1,19,0,0),(10,1,34,0,0),(15,1,55,0,0),(20,1,80,0,0),(26,1,108,0,0),
-    (18,2,68,0,0),(20,2,78,0,0),(24,2,97,0,0),(30,2,116,0,0),(18,2,68,2,69),
-    (20,4,81,0,0),(24,2,92,2,93),(26,4,107,0,0),(30,3,115,1,116),(22,5,87,1,88),
-    (24,5,98,1,99),(28,1,107,5,108),(30,5,120,1,121),(28,3,113,4,114),(28,3,107,5,108),
-    (28,4,116,4,117),(28,2,111,7,112),(30,4,121,5,122),(30,6,117,4,118),(26,8,106,4,107),
-    (28,10,114,2,115),(30,8,122,4,123),(30,3,117,10,118),(30,7,116,7,117),(30,5,115,10,116),
-    (30,13,115,3,116),(30,17,115,0,0),(30,17,115,1,116),(30,13,115,6,116),(30,12,121,7,122),
-    (30,6,121,14,122),(30,17,122,4,123),(30,4,122,18,123),(30,20,117,4,118),(30,19,118,6,119),
-]
+# EC parameters per version: (ec_cw_per_block, g1_count, g1_dcw, g2_count, g2_dcw)
+_ECL_TAB = {
+    'L': [
+        None,
+        (7,1,19,0,0),(10,1,34,0,0),(15,1,55,0,0),(20,1,80,0,0),(26,1,108,0,0),
+        (18,2,68,0,0),(20,2,78,0,0),(24,2,97,0,0),(30,2,116,0,0),(18,2,68,2,69),
+        (20,4,81,0,0),(24,2,92,2,93),(26,4,107,0,0),(30,3,115,1,116),(22,5,87,1,88),
+        (24,5,98,1,99),(28,1,107,5,108),(30,5,120,1,121),(28,3,113,4,114),(28,3,107,5,108),
+        (28,4,116,4,117),(28,2,111,7,112),(30,4,121,5,122),(30,6,117,4,118),(26,8,106,4,107),
+        (28,10,114,2,115),(30,8,122,4,123),(30,3,117,10,118),(30,7,116,7,117),(30,5,115,10,116),
+        (30,13,115,3,116),(30,17,115,0,0),(30,17,115,1,116),(30,13,115,6,116),(30,12,121,7,122),
+        (30,6,121,14,122),(30,17,122,4,123),(30,4,122,18,123),(30,20,117,4,118),(30,19,118,6,119),
+    ],
+    'M': [
+        None,
+        (10,1,16,0,0),(16,1,28,0,0),(26,1,44,0,0),(18,2,32,0,0),(24,2,43,0,0),
+        (16,4,27,0,0),(18,4,31,0,0),(22,2,38,2,39),(22,3,36,2,37),(26,4,43,1,44),
+        (30,1,50,4,51),(22,6,36,2,37),(22,8,37,1,38),(24,4,40,5,41),(24,5,41,5,42),
+        (28,7,45,3,46),(28,10,46,1,47),(26,9,43,4,44),(26,3,44,11,45),(26,3,41,13,42),
+        (26,17,42,0,0),(28,17,46,0,0),(28,4,47,14,48),(28,6,45,14,46),(28,8,47,13,48),
+        (28,19,46,4,47),(28,22,45,3,46),(28,3,45,23,46),(28,21,45,7,46),(28,19,47,10,48),
+        (28,2,46,29,47),(28,10,46,23,47),(28,14,46,21,47),(28,14,46,23,47),(28,12,47,26,48),
+        (28,6,47,34,48),(28,29,46,14,47),(28,13,46,32,47),(28,40,47,7,48),(28,18,47,31,48),
+    ]
+}
 
 def _align_pos(v):
     if v < 2: return []
@@ -55,8 +70,9 @@ def _rs_encode(data, nsym):
                 res[i + j] ^= EXP[LOG[g[j]] + LOG[coef]] if g[j] else 0
     return res[-nsym:]
 
-def _format_info(mask):
-    data = (1 << 3) | mask  # EC-L = 01
+def _format_info(mask, ec_level='L'):
+    ec_bits = 1 if ec_level == 'L' else 0
+    data = (ec_bits << 3) | mask
     d = data << 10
     for i in range(14, 9, -1):
         if d & (1 << i): d ^= 0x537 << (i - 10)
@@ -68,17 +84,17 @@ def _version_info(v):
         if d & (1 << i): d ^= 0x1F25 << (i - 12)
     return (v << 12) | d
 
-def _select_version(data_len):
+def _select_version(data_len, ec_level):
     for v in range(1, 41):
-        ec, g1n, g1d, g2n, g2d = _ECL[v]
+        ec, g1n, g1d, g2n, g2d = _ECL_TAB[ec_level][v]
         total_dcw = g1n * g1d + g2n * g2d
         cc = 8 if v <= 9 else 16
         if data_len <= (total_dcw * 8 - 4 - cc) // 8:
             return v
     raise ValueError(f"Data too long ({data_len} bytes)")
 
-def _encode_data(data, v):
-    ec, g1n, g1d, g2n, g2d = _ECL[v]
+def _encode_data(data, v, ec_level):
+    ec, g1n, g1d, g2n, g2d = _ECL_TAB[ec_level][v]
     total_dcw = g1n * g1d + g2n * g2d
     cc = 8 if v <= 9 else 16
     bits = [0, 1, 0, 0]
@@ -94,8 +110,8 @@ def _encode_data(data, v):
     while len(cw) < total_dcw: cw.append(pad[pi]); pi ^= 1
     return cw
 
-def _interleave(data_cw, v):
-    ec_per, g1n, g1d, g2n, g2d = _ECL[v]
+def _interleave(data_cw, v, ec_level):
+    ec_per, g1n, g1d, g2n, g2d = _ECL_TAB[ec_level][v]
     blocks = []; pos = 0
     for _ in range(g1n): blocks.append(data_cw[pos:pos+g1d]); pos += g1d
     for _ in range(g2n): blocks.append(data_cw[pos:pos+g2d]); pos += g2d
@@ -157,14 +173,14 @@ def _penalty(M, S):
     score += min(abs(prev5 - 50), abs(next5 - 50)) // 5 * 10
     return score
 
-def make_qr(data):
+def make_qr(data, ec_level='L'):
     if isinstance(data, str): data = data.encode('utf-8')
     data = list(data)
-    v = _select_version(len(data))
+    v = _select_version(len(data), ec_level)
     S = 4 * v + 17
 
-    data_cw = _encode_data(data, v)
-    codewords = _interleave(data_cw, v)
+    data_cw = _encode_data(data, v, ec_level)
+    codewords = _interleave(data_cw, v, ec_level)
     bits = []
     for b in codewords:
         for i in range(7, -1, -1): bits.append((b >> i) & 1)
@@ -248,7 +264,7 @@ def make_qr(data):
             if _mask_fn(mask, r, c):
                 T[r][c] ^= 1
         # Write format info (ISO 18004 Section 7.9.1)
-        fi = _format_info(mask)
+        fi = _format_info(mask, ec_level)
         voff = hoff = 0
         for i in range(8):
             vbit = (fi >> i) & 1          # LSB first
@@ -308,10 +324,12 @@ def _wait(duration):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Generate QR codes from stdin')
-    parser.add_argument('-n', '--chunk-size', type=int, default=0, metavar='SIZE',
+    parser.add_argument('-n', '--chunk-size', type=int, default=1000, metavar='SIZE',
                         help='Split input into chunks of SIZE characters')
     parser.add_argument('-d', '--delay', type=float, default=0, metavar='DELAY',
                         help='Delay <DELAY> seconds between each chunk, default 0')
+    parser.add_argument('--EC', choices=['L', 'M'], default='M',
+                        help='Error correction level (L or M), default M')
 
     args = parser.parse_args()
     data = sys.stdin.read().strip()
@@ -330,10 +348,17 @@ if __name__ == '__main__':
         for idx, chunk in enumerate(chunks, 1):
             if args.delay > 0:
                 os.system('clear')
-            print(f"\nchunk {idx}/{total}\n")
-            terminal(make_qr(chunk.encode('utf-8')))
+            cbytes = chunk.encode('utf-8')
+            v = _select_version(len(cbytes), args.EC)
+            md5 = hashlib.md5(cbytes).hexdigest()
+            print(f"\nchunk {idx}/{total} (v{v}, md5: {md5})\n")
+            terminal(make_qr(cbytes, args.EC))
             if args.delay > 0:
                 _wait(args.delay)
     else:
-        terminal(make_qr(data.encode('utf-8')))
+        cbytes = data.encode('utf-8')
+        v = _select_version(len(cbytes), args.EC)
+        md5 = hashlib.md5(cbytes).hexdigest()
+        print(f"\nchunk 1/1 (v{v}, md5: {md5})\n")
+        terminal(make_qr(cbytes, args.EC))
 
