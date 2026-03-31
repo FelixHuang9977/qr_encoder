@@ -84,8 +84,8 @@ def _version_info(v):
         if d & (1 << i): d ^= 0x1F25 << (i - 12)
     return (v << 12) | d
 
-def _select_version(data_len, ec_level):
-    for v in range(1, 41):
+def _select_version(data_len, ec_level, min_v=1):
+    for v in range(max(1, min_v), 41):
         ec, g1n, g1d, g2n, g2d = _ECL_TAB[ec_level][v]
         total_dcw = g1n * g1d + g2n * g2d
         cc = 8 if v <= 9 else 16
@@ -173,10 +173,10 @@ def _penalty(M, S):
     score += min(abs(prev5 - 50), abs(next5 - 50)) // 5 * 10
     return score
 
-def make_qr(data, ec_level='L'):
+def make_qr(data, ec_level='L', min_v=1):
     if isinstance(data, str): data = data.encode('utf-8')
     data = list(data)
-    v = _select_version(len(data), ec_level)
+    v = _select_version(len(data), ec_level, min_v)
     S = 4 * v + 17
 
     data_cw = _encode_data(data, v, ec_level)
@@ -330,6 +330,8 @@ if __name__ == '__main__':
                         help='Delay <DELAY> seconds between each chunk, default 0')
     parser.add_argument('--EC', choices=['L', 'M'], default='M',
                         help='Error correction level (L or M), default M')
+    parser.add_argument('--version', type=int, default=20, metavar='VER',
+                        help='Minimum QR version (1-40), default 20')
 
     args = parser.parse_args()
     data = sys.stdin.read().strip()
@@ -349,16 +351,16 @@ if __name__ == '__main__':
             if args.delay > 0:
                 os.system('clear')
             cbytes = chunk.encode('utf-8')
-            v = _select_version(len(cbytes), args.EC)
+            v = _select_version(len(cbytes), args.EC, args.version)
             md5 = hashlib.md5(cbytes).hexdigest()
             print(f"\nchunk {idx}/{total} (v{v}, md5: {md5})\n")
-            terminal(make_qr(cbytes, args.EC))
+            terminal(make_qr(cbytes, args.EC, args.version))
             if args.delay > 0:
                 _wait(args.delay)
     else:
         cbytes = data.encode('utf-8')
-        v = _select_version(len(cbytes), args.EC)
+        v = _select_version(len(cbytes), args.EC, args.version)
         md5 = hashlib.md5(cbytes).hexdigest()
         print(f"\nchunk 1/1 (v{v}, md5: {md5})\n")
-        terminal(make_qr(cbytes, args.EC))
+        terminal(make_qr(cbytes, args.EC, args.version))
 
