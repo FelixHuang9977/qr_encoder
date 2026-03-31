@@ -20,6 +20,9 @@
 ## example
 - python qr_decoder_lite.py test.mp4
 
+## tests
+- Tests are implemented using pytest in the `tests/test_qr_decoder_lite.py` file. Run `pytest tests/test_qr_decoder_lite.py` to execute them.
+
 ## reference
 
 
