@@ -84,14 +84,14 @@ def _version_info(v):
         if d & (1 << i): d ^= 0x1F25 << (i - 12)
     return (v << 12) | d
 
-def _select_version(data_len, ec_level):
-    for v in range(1, 41):
+def _select_version(data_len, ec_level, max_version=40):
+    for v in range(1, max_version + 1):
         ec, g1n, g1d, g2n, g2d = _ECL_TAB[ec_level][v]
         total_dcw = g1n * g1d + g2n * g2d
         cc = 8 if v <= 9 else 16
         if data_len <= (total_dcw * 8 - 4 - cc) // 8:
             return v
-    raise ValueError(f"Data too long ({data_len} bytes)")
+    raise ValueError(f"Data too long ({data_len} bytes) for max version {max_version}")
 
 def _encode_data(data, v, ec_level):
     ec, g1n, g1d, g2n, g2d = _ECL_TAB[ec_level][v]
@@ -173,10 +173,10 @@ def _penalty(M, S):
     score += min(abs(prev5 - 50), abs(next5 - 50)) // 5 * 10
     return score
 
-def make_qr(data, ec_level='L'):
+def make_qr(data, ec_level='L', max_version=40):
     if isinstance(data, str): data = data.encode('utf-8')
     data = list(data)
-    v = _select_version(len(data), ec_level)
+    v = _select_version(len(data), ec_level, max_version)
     S = 4 * v + 17
 
     data_cw = _encode_data(data, v, ec_level)
@@ -321,6 +321,12 @@ def _wait(duration):
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         tty_f.close()
 
+def _get_max_data_len(v, ec_level):
+    ec, g1n, g1d, g2n, g2d = _ECL_TAB[ec_level][v]
+    total_dcw = g1n * g1d + g2n * g2d
+    cc = 8 if v <= 9 else 16
+    return (total_dcw * 8 - 4 - cc) // 8
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Generate QR codes from stdin')
@@ -330,6 +336,8 @@ if __name__ == '__main__':
                         help='Delay <DELAY> seconds between each chunk, default 0')
     parser.add_argument('--EC', choices=['L', 'M'], default='M',
                         help='Error correction level (L or M), default M')
+    parser.add_argument('--max-version', type=int, default=None, metavar='MAX_VER',
+                        help='Maximum QR version to use (1-40)')
 
     args = parser.parse_args()
     data = sys.stdin.read().strip()
@@ -342,6 +350,13 @@ if __name__ == '__main__':
        print(f"\nDetected player mode, going to start in 3 seconds\n") 
        _wait(3)
 
+    max_ver = args.max_version if args.max_version is not None else 40
+
+    if args.max_version is not None:
+        max_cap = _get_max_data_len(args.max_version, args.EC)
+        if args.chunk_size > max_cap:
+            args.chunk_size = max_cap
+
     if args.chunk_size > 0:
         chunks = [data[i:i+args.chunk_size] for i in range(0, len(data), args.chunk_size)]
         total = len(chunks)
@@ -349,16 +364,16 @@ if __name__ == '__main__':
             if args.delay > 0:
                 os.system('clear')
             cbytes = chunk.encode('utf-8')
-            v = _select_version(len(cbytes), args.EC)
+            v = _select_version(len(cbytes), args.EC, max_ver)
             md5 = hashlib.md5(cbytes).hexdigest()
             print(f"\nchunk {idx}/{total} (v{v}, md5: {md5})\n")
-            terminal(make_qr(cbytes, args.EC))
+            terminal(make_qr(cbytes, args.EC, max_ver))
             if args.delay > 0:
                 _wait(args.delay)
     else:
         cbytes = data.encode('utf-8')
-        v = _select_version(len(cbytes), args.EC)
+        v = _select_version(len(cbytes), args.EC, max_ver)
         md5 = hashlib.md5(cbytes).hexdigest()
         print(f"\nchunk 1/1 (v{v}, md5: {md5})\n")
-        terminal(make_qr(cbytes, args.EC))
+        terminal(make_qr(cbytes, args.EC, max_ver))
 
