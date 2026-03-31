@@ -37,5 +37,8 @@
 ## example
 - base64 log_103c.txt | python qr_encoder_lite.py
 
+## tests
+- Tests are implemented using pytest in the `tests/test_qr_encoder_lite.py` file. Run `pytest tests/test_qr_encoder_lite.py` to execute them.
+
 ## reference
 - qr_encoder_lite.py
