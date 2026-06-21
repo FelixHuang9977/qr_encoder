@@ -6,7 +6,7 @@ Usage: echo "data" | python3 qr_encoder_lite.py
        base64 file.txt | python3 qr_encoder_lite.py
        base64 file.txt | python3 qr_encoder_lite.py -n 1100 --EC M -d 0.5
 """
-import sys,os,time,select,tty,termios,hashlib
+import sys,os,time,hashlib
 
 # EC parameters per version: (ec_cw_per_block, g1_count, g1_dcw, g2_count, g2_dcw)
 _ECL_TAB = {
@@ -306,6 +306,11 @@ def terminal(M):
 def _wait(duration):
     """Sleep for `duration` seconds, but skip immediately if user presses a key."""
     try:
+        import select, tty, termios
+    except ImportError:
+        time.sleep(duration)
+        return
+    try:
         tty_f = open('/dev/tty', 'r')
     except OSError:
         time.sleep(duration)
@@ -366,7 +371,7 @@ if __name__ == '__main__':
             cbytes = chunk.encode('utf-8')
             v = _select_version(len(cbytes), args.EC, max_ver)
             md5 = hashlib.md5(cbytes).hexdigest()
-            print(f"\nchunk {idx}/{total} (v{v}, md5: {md5})\n")
+            print(f"\nchunk {idx}/{total} (v{v}, {len(chunk)} chars, md5: {md5})\n")
             terminal(make_qr(cbytes, args.EC, max_ver))
             if args.delay > 0:
                 _wait(args.delay)
@@ -374,6 +379,6 @@ if __name__ == '__main__':
         cbytes = data.encode('utf-8')
         v = _select_version(len(cbytes), args.EC, max_ver)
         md5 = hashlib.md5(cbytes).hexdigest()
-        print(f"\nchunk 1/1 (v{v}, md5: {md5})\n")
+        print(f"\nchunk 1/1 (v{v}, {len(data)} chars, md5: {md5})\n")
         terminal(make_qr(cbytes, args.EC, max_ver))
 
