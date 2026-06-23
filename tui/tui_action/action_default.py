@@ -1,0 +1,1 @@
+print("default action for any selected log item")

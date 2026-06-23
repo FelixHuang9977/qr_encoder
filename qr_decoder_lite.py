@@ -19,6 +19,7 @@ import zxingcpp
 
 def extract_frames(video_path, output_dir, fps=2):
     """Extract frames from video using ffmpeg at the given fps."""
+    print("processing...may take couple mins, check tmp_decode folder for status...")
     pattern = os.path.join(output_dir, "frame_%06d.png")
     cmd = [
         "ffmpeg", "-i", video_path,
@@ -51,36 +52,52 @@ def main():
     parser.add_argument("video", help="Path to the video file")
     parser.add_argument("-r", "--fps", type=float, default=10,
                         help="Frame sampling rate in fps (default: 2)")
+    parser.add_argument("--max-chunk", type=int, default=0, help="max chunk number, 0 means no limit")
+    parser.add_argument("--skip-decode", action="store_true", help="skip decode frames, just use existing data")
     args = parser.parse_args()
 
     if not os.path.isfile(args.video):
         print(f"Error: file not found: {args.video}", file=sys.stderr)
         sys.exit(1)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
+    import shutil
+    tmpdir = "./tmp_decode"
+    os.makedirs(tmpdir, exist_ok=True)
+        
+    if args.skip_decode:
+        frames = sorted(glob.glob(os.path.join(tmpdir, "frame_*.png")))
+        print(f"Using {len(frames)} existing frames from {tmpdir}", file=sys.stderr)
+    else:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        os.makedirs(tmpdir, exist_ok=True)
         print(f"Extracting frames at {args.fps} fps...", file=sys.stderr)
         frames = extract_frames(args.video, tmpdir, fps=args.fps)
         print(f"Extracted {len(frames)} frames", file=sys.stderr)
+    decoded_parts = []
+    prev_text = None
 
-        decoded_parts = []
-        prev_text = None
+    for i, frame_path in enumerate(frames):
+        if args.max_chunk != 0 and len(decoded_parts) >= args.max_chunk:
+            break
+        text = decode_frame(frame_path)
+        if text is not None and text != prev_text:
+            decoded_parts.append(text)
+            print(f"  Frame {i+1}/{len(frames)}: decoded chunk {len(decoded_parts)}", file=sys.stderr)
+            prev_text = text
+        elif text is None and prev_text is not None:
+            prev_text = None
 
-        for i, frame_path in enumerate(frames):
-            text = decode_frame(frame_path)
-            if text is not None and text != prev_text:
-                decoded_parts.append(text)
-                print(f"  Frame {i+1}/{len(frames)}: decoded chunk {len(decoded_parts)}", file=sys.stderr)
-                prev_text = text
-            elif text is None and prev_text is not None:
-                prev_text = None
+    if not decoded_parts:
+        print("No QR codes found in video", file=sys.stderr)
+        sys.exit(1)
 
-        if not decoded_parts:
-            print("No QR codes found in video", file=sys.stderr)
-            sys.exit(1)
-
-        print(f"\nDecoded {len(decoded_parts)} unique QR chunk(s)", file=sys.stderr)
-        # Output concatenated result to stdout
-        print("".join(decoded_parts))
+    print(f"\nDecoded {len(decoded_parts)} unique QR chunk(s)", file=sys.stderr)
+    result_str = "".join(decoded_parts)
+    # Output concatenated result to stdout
+    print(result_str)
+    # Also output to tmp_decode.base64 file
+    with open("tmp_decode.base64", "w", encoding="utf-8") as f:
+        f.write(result_str)
 
 
 if __name__ == "__main__":

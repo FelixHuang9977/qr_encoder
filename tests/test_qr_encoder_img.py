@@ -107,3 +107,72 @@ def test_invalid_max_version_cli(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         main()
 
+def test_old_images_are_deleted(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    output_dir = tmp_path / "output"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create some dummy stale qr_*.png files
+    stale_file = output_dir / "qr_999999.png"
+    stale_file.write_text("dummy content")
+    assert stale_file.exists()
+    
+    # Run main with a single chunk input
+    monkeypatch.setattr(sys, 'stdin', io.StringIO("Short test input"))
+    monkeypatch.setattr(sys, 'argv', ['qr_encoder_img.py', '-n', '100'])
+    main()
+    
+    # Verify that the stale file was deleted, and the new chunk file was created
+    assert not stale_file.exists()
+    assert (output_dir / "qr_000001.png").exists()
+
+def test_save_qr_image_with_label(tmp_path):
+    text = "Label Test!"
+    matrix = make_qr(text.encode('utf-8'), 'M')
+    filepath_no_label = str(tmp_path / "qr_no_label.png")
+    filepath_label = str(tmp_path / "qr_label.png")
+    
+    # Save standard
+    save_qr_image(matrix, filepath_no_label, scale=10, border=4)
+    # Save with label
+    label_str = "Test Label - Chunk 1"
+    save_qr_image(matrix, filepath_label, scale=10, border=4, label=label_str)
+    
+    img_no_label = Image.open(filepath_no_label)
+    img_label = Image.open(filepath_label)
+    
+    # Labeled image should be taller by 30 pixels (since scale=10, font_size=15, extra_height=30)
+    assert img_label.size[0] == img_no_label.size[0]
+    assert img_label.size[1] == img_no_label.size[1] + 30
+    
+    # Decode using zxingcpp to make sure the label doesn't break the QR reader
+    results = zxingcpp.read_barcodes(img_label)
+    assert len(results) == 1
+    assert results[0].text == text
+
+def test_cli_label_option(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    output_dir = tmp_path / "output"
+    
+    monkeypatch.setattr(sys, 'stdin', io.StringIO("Demo data for label"))
+    # Pass --label auto
+    monkeypatch.setattr(sys, 'argv', ['qr_encoder_img.py', '-n', '100', '--label'])
+    main()
+    
+    img = Image.open(output_dir / "qr_000001.png")
+    # It should have extra height since --label (defaults to auto -> filename) is used
+    # Matrix size for v2 is S=25, with border=4, new_size=33. Scaled by 10 = 330. Plus 30 extra height = 360.
+    assert img.size == (330, 360)
+
+def test_cli_default_datetime_label(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    output_dir = tmp_path / "output"
+    
+    monkeypatch.setattr(sys, 'stdin', io.StringIO("Demo data for label"))
+    # Do NOT pass --label at all
+    monkeypatch.setattr(sys, 'argv', ['qr_encoder_img.py', '-n', '100'])
+    main()
+    
+    img = Image.open(output_dir / "qr_000001.png")
+    # Matrix size for v2 is S=25, with border=4, new_size=33. Scaled by 10 = 330. Plus 30 extra height = 360.
+    assert img.size == (330, 360)

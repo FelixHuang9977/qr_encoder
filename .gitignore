@@ -5,3 +5,6 @@ __pycache__/
 *$py.class
 .pytest_cache/
 output/
+tmp_decode/
+input_mov/
+output_mov/

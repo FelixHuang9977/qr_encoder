@@ -1,0 +1,25 @@
+{
+    "wip_list": [
+        {
+            "date": "20260622",
+            "time": "091115",
+            "sn": "00000000000001",
+            "sa": "SA09000",
+            "log_file": "/tmp/xxx/xxxxx.tar.gz"
+        },
+        {
+            "date": "20260622",
+            "time": "091115",
+            "sn": "00000000000002",
+            "sa": "SA09000",
+            "log_file": "/tmp/xxx/xxxxx.tar.gz"
+        },
+        {
+            "date": "20260622",
+            "time": "091115",
+            "sn": "00000000000003",
+            "sa": "SA09000",
+            "log_file": "/tmp/xxx/xxxxx.tar.gz"
+        }
+    ]
+}
