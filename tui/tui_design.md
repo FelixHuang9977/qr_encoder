@@ -61,8 +61,8 @@
     - extract the hotkey and action name from the file name
 
 - load phase:
-    - if arg  (--last-n-day) not exist, use 3 by default
-    - seach all jsons which meet last-n-day in tui_list_cache and merge all to a list of dict (name as log_dict_list)
+    - if arg  (--days) not exist, use 3 by default
+    - seach all jsons which meet --days in tui_meta_cache and merge all to a list of dict (name as log_dict_list)
 
 - list view phase:
     - tui create a table for filtered log items
@@ -70,7 +70,10 @@
     - when user select a log item by click enter
 
 - log_action phase:
-    - tui provice 
+    - check if hot key detected, find matched action for the hotkey
+    - process standard control (s, S, Esc, Enter) first then action hotkey
+    - when invoke an action or default action, the TUI should temporarily suspend curses (curses.endwin()) when launching an action subprocess so the action can print/display interactive output (like tables) directly to the user's shell.
+    - after the action is finished, the TUI should resume curses (curses.initscr()) and refresh the screen
 
 ## tech stack
 - Python 3.10
@@ -78,9 +81,10 @@
 
 ## requirement
 - Render an interactive terminal menu using curses.
-- Keep the Title and Search Bar and Action Bar fixed at the top of the terminal screen during list scroll/pagination.
+- Keep the Title and Search Bar fixed at the top of the terminal screen during list scroll/pagination.
     - Title Bar: show fixed string
-    - Search Bar: search NO or SA or SN
+    - Search Bar: search ALIAS or SA or SN
+- rendering an Action Bar (e.g., on the bottom row of the screen) that displays loaded hotkeys
 
 - Support key navigation:
   - **Within the Item List**:
@@ -91,7 +95,7 @@
     - `KEY_HOME` (Home): Jump selection to the first item.
     - `KEY_END` (End): Jump selection to the last item.
     - `s` / `S`: Focus/select the search bar (SA field).
-    - `Enter` / `10` / `13` (Enter): Select the highlighted item and exit.
+    - `Enter` / `10` / `13` (Enter): Select the highlighted item and trigger default action.
     - `Esc` / `27` (Escape): Abort selection and exit.
   - **Within the Search Bar**:
     - `KEY_LEFT` / `KEY_RIGHT`: Switch focus between `SA` and `SN` filter fields.
