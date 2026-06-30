@@ -10,3 +10,4 @@ input_mov/
 output_mov/
 tui/logs/*
 tmp_decode.base64
+log_comparer/tmp_log_comparer.log

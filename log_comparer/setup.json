@@ -1,13 +1,25 @@
 {
-    "static_patterns": {
-        "MATRIX START": "^.*MATRIX START",
-        "MATRIX END": "^.MATRIX END"
+    "default_config":{
+        "view_diff_mode": true,
+        "view_all_mode": false,
+        "diff_context": 1,
+        "show_line_numbers": false,
+        "highlight_diffs": false,
+        "debug_mode": true
+    },
+    "tag_patterns": {
+        "MATRIX START": "MATRIX START",
+        "MATRIX END": "MATRIX END"
     },
     "replace_patterns": {
-        "TIME": r'\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\b',
-        "PID": r'\bpid=\d+\b',
-        "TID": r'\btid=\d+\b',
-        "THREAD": r'\bthread=\d+\b',
-        "HEX": r'0x[0-9a-fA-F]+\b'
+        "TIME": "\\b\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d+)?\\b",
+        "PID": "\\bpid=\\d+\\b",
+        "TID": "\\btid=\\d+\\b",
+        "THREAD": "\\bthread=\\d+\\b",
+        "HEX": "0x[0-9a-fA-F]+\\b"
+    },
+    "colors": {
+        "tag_foreground": "black",
+        "tag_background": "yellow"
     }
 }

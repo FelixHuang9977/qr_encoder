@@ -19,14 +19,20 @@
 
 其他快捷鍵
 - `↑` / `↓`: 向上/向下捲動一行。
+- `←` / `→`: 調整顯示行的字元起始偏移，用於水平滾動長行。
+- `[` / `]`: 將左側欄寬在 1/8、1/4、1/2、3/4、7/8 之間切換。
+- `w`: 切換行換行模式；預設為啟用。
+- `Tab` / `Shift-Tab`: 在非換行模式下，分別向右或向左移動 16 個字元的起始偏移。
 - `l`: 切換顯示行號（左/右各行的原始行號）。
 - `h`: 切換將差異列以反白顯示（差異列會用反色或指定顏色顯示）。
+- `t`: 在 `view_diff_mode` 下切換顯示/隱藏 `tag_patterns` 所標記的行。
 
 資料處理
 - 載入檔案時會做標準化：
   - 取代固定格式（時間、pid、tid、thread、16 進位等）為保護性標記，減少非實質差異。
   - 可選忽略大小寫處理（CLI 參數 `--ignore-case`）。
   - 濾掉可配置的 drop patterns（例如 heartbeat、health check、polling）。
+  - 若同目錄存在 `setup.json`，會讀取 `replace_patterns`（附加到預設取代規則）與 `tag_patterns`（用以標示特定行）。
 - 使用 `difflib.SequenceMatcher` 計算左/右檔案的 opcode，展開為行級的三元組 (marker, left_text, right_text)，marker 表示相等/替換/刪除/插入。
 
 UI 與互動

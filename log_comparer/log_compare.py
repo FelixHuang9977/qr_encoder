@@ -3,6 +3,8 @@ import argparse
 import curses
 import difflib
 import re
+import json
+import ast
 from pathlib import Path
 
 REPLACEMENTS = [
@@ -19,6 +21,17 @@ DROP_PATTERNS = [
     r'health check',
     r'polling',
 ]
+
+COLOR_NAMES = {
+    'black': curses.COLOR_BLACK,
+    'red': curses.COLOR_RED,
+    'green': curses.COLOR_GREEN,
+    'yellow': curses.COLOR_YELLOW,
+    'blue': curses.COLOR_BLUE,
+    'magenta': curses.COLOR_MAGENTA,
+    'cyan': curses.COLOR_CYAN,
+    'white': curses.COLOR_WHITE,
+}
 
 
 def normalize_line(line, ignore_case=False):
@@ -52,8 +65,25 @@ def fit(text, width):
     return text[:width - 1] + "…"
 
 
+def wrap_segments(text, width, offset=0, wrap_mode=True):
+    if width <= 0:
+        return [""]
+    if offset < 0:
+        offset = 0
+    text = (text or "")[offset:]
+    if not wrap_mode:
+        return [fit(text[:width], width)]
+    segments = []
+    while text:
+        segments.append(fit(text[:width], width))
+        text = text[width:]
+    if not segments:
+        segments.append(" " * width)
+    return segments
+
+
 class LogComparer:
-    def __init__(self, a_lines, b_lines, left_name, right_name):
+    def __init__(self, a_lines, b_lines, left_name, right_name, tag_patterns=None, debug_mode=False):
         self.a_lines = a_lines
         self.b_lines = b_lines
         self.left_name = left_name
@@ -65,11 +95,37 @@ class LogComparer:
         self.show_line_numbers = False
         self.highlight_diffs = False
         self.highlight_pattern = None
-
+        self.tag_patterns = tag_patterns or []
+        self.debug_mode = debug_mode
+        self.debug_path = Path(__file__).resolve().parent / 'tmp_log_comparer.log'
+        if self.debug_mode:
+            try:
+                self.debug_path.write_text('')
+            except Exception:
+                pass
+        self.show_tag = False
+        self.wrap_mode = True
+        self.left_width_fraction = 0.5
+        self.offset = 0
+        self.tag_color_fg = None
+        self.tag_color_bg = None
+        self.tag_color_pair = None
         self.top_row = 0
 
         self.rows = []
         self.build_rows()
+
+    def log_debug(self, msg: str):
+        if not getattr(self, 'debug_mode', False):
+            return
+        try:
+            from datetime import datetime, timezone
+            entry = f"{datetime.now(timezone.utc).isoformat()} {msg}\n"
+            with open(self.debug_path, 'a', encoding='utf-8') as f:
+                f.write(entry)
+        except Exception:
+            pass
+    
 
     def build_rows(self):
         self.rows = []
@@ -94,8 +150,19 @@ class LogComparer:
                 rtxt = right[idx] if idx < len(right) else ""
                 lnum = (i1 + idx + 1) if idx < len(left) else None
                 rnum = (j1 + idx + 1) if idx < len(right) else None
-                # rows: (marker, left_text, right_text, left_line_no, right_line_no)
-                self.rows.append((marker, ltxt, rtxt, lnum, rnum))
+                # rows: (marker, left_text, right_text, left_line_no, right_line_no, tag_flag)
+                tag_flag = False
+                for p in self.tag_patterns:
+                    try:
+                        if (ltxt and re.search(p, ltxt, re.IGNORECASE)) or (rtxt and re.search(p, rtxt, re.IGNORECASE)):
+                            tag_flag = True
+                            break
+                    except re.error:
+                        # invalid regex, fallback to literal
+                        if (ltxt and p.lower() in ltxt.lower()) or (rtxt and p.lower() in rtxt.lower()):
+                            tag_flag = True
+                            break
+                self.rows.append((marker, ltxt, rtxt, lnum, rnum, tag_flag))
 
     def visible_indices(self):
         if self.view_all_mode:
@@ -108,6 +175,11 @@ class LogComparer:
             for k in range(i - self.diff_context, i + self.diff_context + 1):
                 if 0 <= k < len(self.rows):
                     visible.add(k)
+        # optionally include tagged lines
+        if self.show_tag:
+            tag_idxs = [i for i, row in enumerate(self.rows) if row[5]]
+            for i in tag_idxs:
+                visible.add(i)
         return sorted(visible)
 
     def search_matches(self, text):
@@ -122,16 +194,29 @@ class LogComparer:
                 return []
             return [re.match(re.escape(text[idx:idx + len(self.highlight_pattern)]), text[idx:idx + len(self.highlight_pattern)])]
 
+    def max_line_offset(self):
+        max_len = 0
+        for _, left, right, _, _, _ in self.rows:
+            max_len = max(max_len, len(left or ""), len(right or ""))
+        return max(0, max_len - 1)
+
 
 def run_curses(stdscr, comparer: LogComparer):
     curses.curs_set(0)
     stdscr.nodelay(False)
     stdscr.keypad(True)
+    tag_color_pair = 3
     if curses.has_colors():
         curses.start_color()
         curses.use_default_colors()
         curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_YELLOW)
         curses.init_pair(2, curses.COLOR_CYAN, -1)
+        fg = COLOR_NAMES.get(str(comparer.tag_color_fg).lower(), curses.COLOR_BLACK)
+        bg = COLOR_NAMES.get(str(comparer.tag_color_bg).lower(), curses.COLOR_YELLOW)
+        curses.init_pair(tag_color_pair, fg, bg)
+        comparer.tag_color_pair = tag_color_pair
+    else:
+        comparer.tag_color_pair = None
 
     while True:
         stdscr.erase()
@@ -142,19 +227,32 @@ def run_curses(stdscr, comparer: LogComparer):
         number_width = 0
         if comparer.show_line_numbers:
             number_width = max(4, len(str(max(1, max(len(comparer.a_lines), len(comparer.b_lines))))))
-        col_width = max(10, (width - gutter - number_width * 2) // 2)
+        content_width = width - gutter - number_width * 2
+        if content_width < 20:
+            content_width = max(20, width - gutter)
+        left_width = max(10, int(content_width * comparer.left_width_fraction))
+        right_width = max(10, content_width - left_width)
+        if right_width < 10:
+            right_width = 10
+            left_width = max(10, content_width - right_width)
 
         # header
         header = f" {comparer.left_name} "
         header2 = f" {comparer.right_name} "
-        stdscr.addnstr(0, 0, header, col_width, curses.color_pair(2))
-        stdscr.addnstr(0, col_width + gutter, header2, col_width, curses.color_pair(2))
+        stdscr.addnstr(0, 0, header, left_width, curses.color_pair(2))
+        stdscr.addnstr(0, left_width + gutter, header2, right_width, curses.color_pair(2))
 
         # mode line
         mode = "ALL" if comparer.view_all_mode else "DIFF"
         ln = "ON" if comparer.show_line_numbers else "OFF"
         hd = "ON" if comparer.highlight_diffs else "OFF"
-        mode_line = f"Mode:{mode} ctx={comparer.diff_context}  lnum={ln}  hdiff={hd}  / a:all d:diff 0-9:set ctx  s:search  PgUp/PgDn:page  ↑/↓:line  l:line#  h:highlight  q:quit"
+        wp = "ON" if comparer.wrap_mode else "OFF"
+        width_pct = int(comparer.left_width_fraction * 8) / 8.0
+        mode_line = (
+            f"Mode:{mode} ctx={comparer.diff_context}  lnum={ln}  hdiff={hd}  wrap={wp}  "
+            f"left={width_pct:.3g} off={comparer.offset}  / a:all d:diff 0-9:set ctx  "
+            f"[:smaller ]:larger w:wrap ←/→:horiz Tab/Shift-Tab:offset  s:search  PgUp/PgDn:page  ↑/↓:line  l:line#  h:highlight  q:quit"
+        )
         stdscr.addnstr(1, 0, mode_line, width - 1)
 
         visible = comparer.visible_indices()
@@ -170,72 +268,92 @@ def run_curses(stdscr, comparer: LogComparer):
             page_top = max(0, total_rows - 1)
         comparer.top_row = page_top
 
+        y = 3
         for idx_on_screen in range(page_size):
             vi = page_top + idx_on_screen
             if vi >= total_rows:
                 break
             row_idx = visible[vi]
-            marker, left, right, lnum, rnum = comparer.rows[row_idx]
+            marker, left, right, lnum, rnum, tag = comparer.rows[row_idx]
 
-            y = idx_on_screen + 3
-            ltxt = fit(left, col_width)
-            rtxt = fit(right, col_width)
+            left_segments = wrap_segments(left, left_width, comparer.offset, comparer.wrap_mode)
+            right_segments = wrap_segments(right, right_width, comparer.offset, comparer.wrap_mode)
+            block_lines = max(len(left_segments), len(right_segments), 1)
 
-            # positions
-            left_col_x = 0
-            left_text_x = left_col_x
-            if comparer.show_line_numbers:
-                left_text_x = left_col_x + number_width + 1
+            for sub_idx in range(block_lines):
+                if y >= height - 1:
+                    break
+                ltxt = left_segments[sub_idx] if sub_idx < len(left_segments) else " " * left_width
+                rtxt = right_segments[sub_idx] if sub_idx < len(right_segments) else " " * right_width
+                sub_marker = marker if sub_idx == 0 else " "
+                sub_lnum = lnum if sub_idx == 0 else None
+                sub_rnum = rnum if sub_idx == 0 else None
 
-            marker_x = left_text_x + col_width + 1
-            right_text_x = left_text_x + col_width + 3
-
-            # draw left number and text
-            try:
+                # positions
+                left_col_x = 0
+                left_text_x = left_col_x
                 if comparer.show_line_numbers:
-                    num = f"{lnum or '':>{number_width}} "
-                    stdscr.addnstr(y, left_col_x, num, number_width + 1)
-                attr = 0
-                if comparer.highlight_diffs and marker != " ":
-                    attr = curses.A_REVERSE
-                stdscr.addnstr(y, left_text_x, ltxt, col_width, attr)
-            except curses.error:
-                pass
+                    left_text_x = left_col_x + number_width + 1
 
-            # marker
-            try:
-                stdscr.addch(y, marker_x, marker)
-            except curses.error:
-                pass
+                marker_x = left_text_x + left_width + 1
+                right_text_x = left_text_x + left_width + 3
 
-            # draw right number and text
-            try:
-                if comparer.show_line_numbers:
-                    numr = f"{rnum or '':>{number_width}} "
-                    stdscr.addnstr(y, right_text_x - (number_width + 1), numr, number_width + 1)
-                attr_r = 0
-                if comparer.highlight_diffs and marker != " ":
-                    attr_r = curses.A_REVERSE
-                stdscr.addnstr(y, right_text_x, rtxt, col_width, attr_r)
-            except curses.error:
-                pass
+                # draw left number and text
+                try:
+                    if comparer.show_line_numbers:
+                        num = f"{sub_lnum or '':>{number_width}} "
+                        stdscr.addnstr(y, left_col_x, num, number_width + 1)
+                    attr = 0
+                    if comparer.highlight_diffs and marker != " ":
+                        attr = curses.A_REVERSE
+                    stdscr.addnstr(y, left_text_x, ltxt, left_width, attr)
+                except curses.error:
+                    pass
 
-            # highlight search matches
-            if comparer.highlight_pattern:
-                for m in re.finditer(comparer.highlight_pattern, left or "", re.IGNORECASE):
+                # marker
+                try:
+                    stdscr.addch(y, marker_x, sub_marker)
+                except curses.error:
+                    pass
+
+                # draw right number and text
+                try:
+                    if comparer.show_line_numbers:
+                        numr = f"{sub_rnum or '':>{number_width}} "
+                        stdscr.addnstr(y, right_text_x - (number_width + 1), numr, number_width + 1)
+                    attr_r = 0
+                    if comparer.highlight_diffs and marker != " ":
+                        attr_r = curses.A_REVERSE
+                    stdscr.addnstr(y, right_text_x, rtxt, right_width, attr_r)
+                except curses.error:
+                    pass
+
+                # tag highlight
+                if tag and comparer.show_tag and comparer.tag_color_pair:
                     try:
-                        start = m.start()
-                        if start < col_width:
-                            stdscr.addnstr(y, left_text_x + start, (left or "")[start:start + (m.end() - m.start())], m.end() - m.start(), curses.color_pair(1))
+                        stdscr.addnstr(y, left_text_x, ltxt, left_width, curses.color_pair(comparer.tag_color_pair))
+                        stdscr.addnstr(y, right_text_x, rtxt, right_width, curses.color_pair(comparer.tag_color_pair))
                     except curses.error:
                         pass
-                for m in re.finditer(comparer.highlight_pattern, right or "", re.IGNORECASE):
-                    try:
-                        start = m.start()
-                        if start < col_width:
-                            stdscr.addnstr(y, right_text_x + start, (right or "")[start:start + (m.end() - m.start())], m.end() - m.start(), curses.color_pair(1))
-                    except curses.error:
-                        pass
+
+                # highlight search matches
+                if comparer.highlight_pattern:
+                    for m in re.finditer(comparer.highlight_pattern, ltxt or "", re.IGNORECASE):
+                        try:
+                            start = m.start()
+                            if start < left_width:
+                                stdscr.addnstr(y, left_text_x + start, ltxt[start:start + (m.end() - m.start())], m.end() - m.start(), curses.color_pair(1))
+                        except curses.error:
+                            pass
+                    for m in re.finditer(comparer.highlight_pattern, rtxt or "", re.IGNORECASE):
+                        try:
+                            start = m.start()
+                            if start < right_width:
+                                stdscr.addnstr(y, right_text_x + start, rtxt[start:start + (m.end() - m.start())], m.end() - m.start(), curses.color_pair(1))
+                        except curses.error:
+                            pass
+
+                y += 1
 
         # footer
         footer = f"Rows {page_top + 1}-{min(page_top + page_size, total_rows)} / {total_rows}"
@@ -243,7 +361,53 @@ def run_curses(stdscr, comparer: LogComparer):
 
         stdscr.refresh()
 
+        def key_name(k):
+            if k in (None, -1):
+                return ''
+            if 0 <= k <= 255:
+                try:
+                    ch = chr(k)
+                    if ch.isprintable():
+                        return ch
+                except Exception:
+                    pass
+            if k == curses.KEY_UP:
+                return 'UP'
+            if k == curses.KEY_DOWN:
+                return 'DOWN'
+            if k == curses.KEY_NPAGE:
+                return 'PGDN'
+            if k == curses.KEY_PPAGE:
+                return 'PGUP'
+            if k == curses.KEY_RESIZE:
+                return 'RESIZE'
+            return str(k)
+
+        def flash(msg, ms=200):
+            try:
+                stdscr.addnstr(0, 0, msg.ljust(width - 1), width - 1, curses.A_BOLD)
+                stdscr.refresh()
+                curses.napms(ms)
+            except curses.error:
+                pass
+
         key = stdscr.getch()
+        try:
+            comparer.log_debug(f"key_pressed {key_name(key)} ({key})")
+        except Exception:
+            pass
+
+        # hotkey set to show flash message
+        hotkeys = {
+            ord('q'), ord('Q'), ord('a'), ord('A'), ord('d'), ord('D'),
+            ord('s'), ord('S'), ord('l'), ord('L'), ord('h'), ord('H'), ord('t'), ord('T'),
+            ord('w'), ord('W'), ord('['), ord(']'), ord('\t'),
+            curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_NPAGE, curses.KEY_PPAGE, curses.KEY_BTAB
+        }
+        if (0 <= key <= 255 and chr(key).isdigit()) or key in hotkeys:
+            name = key_name(key)
+            if name:
+                flash(f"processing {name}")
         if key == curses.KEY_RESIZE:
             comparer.build_rows()
             continue
@@ -273,17 +437,65 @@ def run_curses(stdscr, comparer: LogComparer):
             if comparer.top_row < 0:
                 comparer.top_row = 0
             continue
+        if key == curses.KEY_RIGHT:
+            comparer.offset += 1
+            if comparer.offset > comparer.max_line_offset():
+                comparer.offset = comparer.max_line_offset()
+            continue
+        if key == curses.KEY_LEFT:
+            comparer.offset -= 1
+            if comparer.offset < 0:
+                comparer.offset = 0
+            continue
+        if key == ord('\t'):
+            if not comparer.wrap_mode:
+                comparer.offset += 16
+                if comparer.offset > comparer.max_line_offset():
+                    comparer.offset = comparer.max_line_offset()
+            continue
+        if key == curses.KEY_BTAB:
+            if not comparer.wrap_mode:
+                comparer.offset -= 16
+                if comparer.offset < 0:
+                    comparer.offset = 0
+            continue
         if key in (ord('l'), ord('L')):
             comparer.show_line_numbers = not comparer.show_line_numbers
             comparer.top_row = 0
             continue
         if key in (ord('h'), ord('H')):
             comparer.highlight_diffs = not comparer.highlight_diffs
+            comparer.log_debug(f"highlight_diffs set to {comparer.highlight_diffs}")
+            continue
+        if key in (ord('w'), ord('W')):
+            comparer.wrap_mode = not comparer.wrap_mode
+            comparer.log_debug(f"wrap_mode set to {comparer.wrap_mode}")
+            comparer.top_row = 0
+            continue
+        if key in (ord('t'), ord('T')):
+            # toggle tag-line visibility (only meaningful in diff mode)
+            comparer.show_tag = not comparer.show_tag
+            comparer.log_debug(f"show_tag toggled to {comparer.show_tag}")
+            comparer.top_row = 0
             continue
         if key == curses.KEY_NPAGE or key == ord(' '):
             comparer.top_row += page_size
             if comparer.top_row > max(0, total_rows - page_size):
                 comparer.top_row = max(0, total_rows - page_size)
+            continue
+        if key == ord('['):
+            fractions = [1/8, 1/4, 1/2, 3/4, 7/8]
+            current = comparer.left_width_fraction
+            next_index = max(0, min(len(fractions) - 1, fractions.index(current) - 1 if current in fractions else 2))
+            comparer.left_width_fraction = fractions[next_index]
+            comparer.top_row = 0
+            continue
+        if key == ord(']'):
+            fractions = [1/8, 1/4, 1/2, 3/4, 7/8]
+            current = comparer.left_width_fraction
+            next_index = min(len(fractions) - 1, fractions.index(current) + 1 if current in fractions else 2)
+            comparer.left_width_fraction = fractions[next_index]
+            comparer.top_row = 0
             continue
         if key == curses.KEY_PPAGE:
             comparer.top_row -= page_size
@@ -316,19 +528,64 @@ def main():
     parser.add_argument("--ignore-case", action="store_true")
     args = parser.parse_args()
 
+    # load optional setup.json in the same folder as this script
+    tag_patterns = []
+    debug_mode = False
+    tag_fg_color = None
+    tag_bg_color = None
+    cfg = {}
+    setup_path = Path(__file__).resolve().parent / 'setup.json'
+    if setup_path.exists():
+        raw = setup_path.read_text(encoding='utf-8')
+        try:
+            cfg = json.loads(raw)
+        except Exception:
+            try:
+                # try to parse Python-style dict (allows r'...' patterns)
+                cfg = ast.literal_eval(raw)
+            except Exception as e:
+                print('Warning: failed to read setup.json:', e)
+                cfg = {}
+
+    # default config
+    default_cfg = cfg.get('default_config', {}) or {}
+    debug_mode = bool(default_cfg.get('debug_mode', False))
+
+    rp = cfg.get('replace_patterns') or cfg.get('REPLACE_PATTERNS')
+    if isinstance(rp, list):
+        for item in rp:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                REPLACEMENTS.append((str(item[0]), str(item[1])))
+            elif isinstance(item, dict) and 'pattern' in item and 'replace' in item:
+                REPLACEMENTS.append((str(item['pattern']), str(item.get('replace', ''))))
+    elif isinstance(rp, dict):
+        for name, pattern in rp.items():
+            REPLACEMENTS.append((str(pattern), f"<{name}>") )
+
+    tp = cfg.get('tag_patterns') or cfg.get('TAG_PATTERNS')
+    if isinstance(tp, list):
+        tag_patterns = [str(x) for x in tp if x]
+    elif isinstance(tp, dict):
+        tag_patterns = [str(v) for v in tp.values() if v]
+
+    color_cfg = cfg.get('colors', {}) or {}
+    tag_fg_color = color_cfg.get('tag_foreground')
+    tag_bg_color = color_cfg.get('tag_background')
+
     a_lines = load_lines(args.left, ignore_case=args.ignore_case)
     b_lines = load_lines(args.right, ignore_case=args.ignore_case)
 
-    comparer = LogComparer(a_lines, b_lines, args.left, args.right)
-    try:
-        curses.wrapper(run_curses, comparer)
-    except Exception as e:
-        # fallback to non-curses print
-        print("Error running curses UI:", e)
-        for row in comparer.rows:
-            marker, l, r, ln, rn = row
-            print(f"{marker} {ln or ''} {l} | {rn or ''} {r}")
+    comparer = LogComparer(a_lines, b_lines, args.left, args.right, tag_patterns=tag_patterns, debug_mode=debug_mode)
+    comparer.tag_color_fg = tag_fg_color
+    comparer.tag_color_bg = tag_bg_color
+    comparer.view_all_mode = bool(default_cfg.get('view_all_mode', comparer.view_all_mode))
+    comparer.view_diff_mode = bool(default_cfg.get('view_diff_mode', comparer.view_diff_mode))
+    comparer.diff_context = int(default_cfg.get('diff_context', comparer.diff_context))
+    comparer.show_line_numbers = bool(default_cfg.get('show_line_numbers', comparer.show_line_numbers))
+    comparer.highlight_diffs = bool(default_cfg.get('highlight_diffs', comparer.highlight_diffs))
+    return curses.wrapper(run_curses, comparer)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
+
