@@ -1,0 +1,13 @@
+{
+    "static_patterns": {
+        "MATRIX START": "^.*MATRIX START",
+        "MATRIX END": "^.MATRIX END"
+    },
+    "replace_patterns": {
+        "TIME": r'\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\b',
+        "PID": r'\bpid=\d+\b',
+        "TID": r'\btid=\d+\b',
+        "THREAD": r'\bthread=\d+\b',
+        "HEX": r'0x[0-9a-fA-F]+\b'
+    }
+}
