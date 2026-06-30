@@ -8,3 +8,5 @@ output/
 tmp_decode/
 input_mov/
 output_mov/
+tui/logs/*
+tmp_decode.base64

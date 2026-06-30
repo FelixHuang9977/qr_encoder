@@ -99,6 +99,7 @@ def main():
     with open("tmp_decode.base64", "w", encoding="utf-8") as f:
         f.write(result_str)
 
-
+    print("Check ./tmp_decode.base64")
+    
 if __name__ == "__main__":
     main()
